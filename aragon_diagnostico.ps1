@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  ARAGON_DIAGNOSTICO.PS1
 #  Aragon Tech Solutions — Script unificado de diagnóstico
 #  Compatible con Windows 7/8/10/11 (PowerShell 2.0+)
@@ -10,7 +10,7 @@
 
 # Auto-actualizacion desde GitHub
 $SCRIPT_VERSION  = "1.0.0"
-$GITHUB_URL      = "https://raw.githubusercontent.com/aragontechsolutions-dev/aragon-backend/main/scripts/aragon_diagnostico.ps1"
+$GITHUB_URL      = "https://raw.githubusercontent.com/aragontechsolutions-dev/aragon-scripts/main/aragon_diagnostico.ps1"
 $BACKEND_URL     = "https://aragon-backend-q4cx.onrender.com/api"
 $OUTPUT_DIR      = Join-Path $env:USERPROFILE "Desktop\AragonDiag"
 
@@ -244,7 +244,7 @@ function Capture-SystemData($phase, $ticketCode) {
             }
         }
     } catch {
-        Write-Warn "OpenHardwareMonitor no disponible — sin datos de temperatura"
+        Write-Warn "OpenHardwareMonitor no disponible - sin datos de temperatura"
     }
 
     # Programas al inicio
@@ -450,7 +450,7 @@ if ($opcion -eq "4") { exit }
 
 if ($opcion -eq "3") {
     if (-not $hayInternet) {
-        Write-Err "Sin internet — no se pueden subir archivos ahora"
+        Write-Err "Sin internet - no se pueden subir archivos ahora"
         Read-Host "  Presiona Enter para salir"
         exit
     }
@@ -497,7 +497,7 @@ if ($opcion -eq "1" -or $opcion -eq "2") {
             Write-Warn "Archivo guardado localmente. Usa la opcion [3] para subir despues."
         }
     } else {
-        Write-Warn "Sin internet — archivo guardado en: $OUTPUT_DIR"
+        Write-Warn "Sin internet - archivo guardado en: $OUTPUT_DIR"
         Write-Warn "Cuando tengas conexion usa la opcion [3] para subir al sistema."
     }
 } else {
