@@ -1,18 +1,31 @@
 ﻿# ============================================================
 #  ARAGON_DIAGNOSTICO.PS1
 #  Aragon Tech Solutions — Script unificado de diagnóstico
-#  Compatible con Windows 7/8/10/11 (PowerShell 2.0+)
+#  Compatible con Windows 7/8/10/11 (PowerShell 3.0 o superior)
 #  - Captura PRE o POST mantenimiento
 #  - Genera JSON estructurado
 #  - Sube automaticamente al backend si hay internet
 #  - Si no hay internet, guarda localmente para subir despues
 # ============================================================
 
-# Auto-actualizacion desde GitHub
-$SCRIPT_VERSION  = "1.0.0"
+$SCRIPT_VERSION  = "1.1.0"
 $GITHUB_URL      = "https://raw.githubusercontent.com/aragontechsolutions-dev/aragon-scripts/main/aragon_diagnostico.ps1"
 $BACKEND_URL     = "https://aragon-backend-q4cx.onrender.com/api"
 $OUTPUT_DIR      = Join-Path $env:USERPROFILE "Desktop\AragonDiag"
+
+# ConvertTo-Json (necesario para generar el diagnostico) existe desde PowerShell 3.0.
+if ($PSVersionTable.PSVersion.Major -lt 3) {
+    Write-Host "  [X]  Este script necesita PowerShell 3.0 o superior (instalado: $($PSVersionTable.PSVersion))." -ForegroundColor Red
+    Write-Host "       Instala Windows Management Framework 3.0 o superior." -ForegroundColor Red
+    Read-Host "  Presiona Enter para salir"
+    exit 1
+}
+
+# Windows 7/8 usan TLS 1.0 por defecto y GitHub y el backend exigen TLS 1.2:
+# sin esto, en esos equipos fallaban el login, la subida y la actualizacion.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
 
 # ── Colores helpers ───────────────────────────────────────────
 function Write-Title($msg) {
@@ -30,7 +43,7 @@ function Write-Info($msg) { Write-Host "  [-]  $msg" -ForegroundColor Gray }
 # ── Verificar internet ────────────────────────────────────────
 function Test-Internet {
     try {
-        $req = [System.Net.WebRequest]::Create("http://www.google.com")
+        $req = [System.Net.WebRequest]::Create("https://www.google.com")
         $req.Timeout = 4000
         $res = $req.GetResponse()
         $res.Close()
@@ -38,33 +51,29 @@ function Test-Internet {
     } catch { return $false }
 }
 
-# ── Auto-actualizacion ────────────────────────────────────────
-function Update-Script {
-    Write-Info "Verificando actualizaciones..."
+# ── Aviso de nueva version ────────────────────────────────────
+# Antes el script se SOBRESCRIBIA a si mismo con lo que hubiera en GitHub y lo
+# ejecutaba con -ExecutionPolicy Bypass, sin verificar nada: quien tomara el
+# control del repositorio podia ejecutar codigo en los PC de los clientes.
+# Ahora solo se lee el numero de version y se avisa; actualizar es un paso
+# manual del tecnico (descargar el archivo desde el Manual del panel).
+function Test-NewVersion {
+    Write-Info "Verificando si hay una version nueva..."
     try {
-        $tempPath = Join-Path $env:TEMP "aragon_diagnostico_new.ps1"
         $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile($GITHUB_URL, $tempPath)
-
-        $newContent = Get-Content $tempPath -Raw -Encoding UTF8
-        if ($newContent -match 'SCRIPT_VERSION\s*=\s*"([\d\.]+)"') {
-            $newVersion = $Matches[1]
-            if ($newVersion -ne $SCRIPT_VERSION) {
-                Write-Warn "Nueva version disponible: v$newVersion (actual: v$SCRIPT_VERSION)"
-                $selfPath = $MyInvocation.ScriptName
-                if ($selfPath) {
-                    Copy-Item $tempPath $selfPath -Force
-                    Write-Ok "Script actualizado. Reiniciando..."
-                    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$selfPath`""
-                    exit
-                }
+        $wc.Encoding = [System.Text.Encoding]::UTF8
+        $remote = $wc.DownloadString($GITHUB_URL)
+        if ($remote -match 'SCRIPT_VERSION\s*=\s*"([\d\.]+)"') {
+            $remoteVersion = [version]$Matches[1]
+            if ($remoteVersion -gt [version]$SCRIPT_VERSION) {
+                Write-Warn "Hay una version nueva: v$remoteVersion (esta es v$SCRIPT_VERSION)."
+                Write-Warn "Descargala desde: $GITHUB_URL"
             } else {
-                Write-Ok "Script actualizado (v$SCRIPT_VERSION)"
+                Write-Ok "Script al dia (v$SCRIPT_VERSION)"
             }
         }
-        Remove-Item $tempPath -ErrorAction SilentlyContinue
     } catch {
-        Write-Warn "No se pudo verificar actualizacion (sin internet o error de red)"
+        Write-Warn "No se pudo verificar si hay una version nueva"
     }
 }
 
@@ -290,15 +299,9 @@ function Capture-SystemData($phase, $ticketCode) {
     return $data
 }
 
-# ── Convertir a JSON compatible con PS2 ──────────────────────
+# ── Convertir a JSON ─────────────────────────────────────────
 function ConvertTo-JsonCompat($obj, $depth) {
-    # PowerShell 3+ tiene ConvertTo-Json nativo
-    try {
-        return $obj | ConvertTo-Json -Depth ($depth) -Compress
-    } catch {
-        # Fallback manual para PS2 (muy básico)
-        return "[Datos capturados - requiere PowerShell 3+ para exportar JSON]"
-    }
+    return $obj | ConvertTo-Json -Depth ($depth) -Compress
 }
 
 # ── Guardar JSON local ────────────────────────────────────────
@@ -362,13 +365,20 @@ function Get-AuthToken {
     Write-Host "  Ingresa tus credenciales de Aragon Tech Solutions:" -ForegroundColor Cyan
     $email    = Read-Host "  Email"
     $password = Read-Host "  Contrasena" -AsSecureString
-    $passPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
-    )
+    $bstr      = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
+    # PtrToStringBSTR es la lectura correcta de un BSTR (PtrToStringAuto depende
+    # de la plataforma y fuera de Windows corta la contrasena).
+    $passPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    # Se borra la copia en memoria no administrada en cuanto se lee.
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 
     try {
-        $body    = "{`"email`":`"$email`",`"password`":`"$passPlain`"}"
+        # ConvertTo-Json escapa comillas y barras: antes el JSON se armaba
+        # concatenando texto y una contrasena con " o \ rompia el login.
+        $body      = @{ email = $email.Trim(); password = $passPlain } | ConvertTo-Json -Compress
+        $passPlain = $null
         $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+        $body      = $null
 
         $req = [System.Net.WebRequest]::Create("$BACKEND_URL/users/login")
         $req.Method        = "POST"
@@ -393,6 +403,13 @@ function Get-AuthToken {
         Write-Err "No se pudo obtener el token"
         return $null
     } catch {
+        $passPlain = $null
+        $body      = $null
+        if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) {
+            $status = [int]$_.Exception.InnerException.Response.StatusCode
+            if ($status -eq 401) { Write-Err "Email o contrasena incorrectos"; return $null }
+            if ($status -eq 429) { Write-Err "Demasiados intentos. Espera 15 minutos."; return $null }
+        }
         Write-Err "Error de login: $_"
         return $null
     }
@@ -432,11 +449,15 @@ $hayInternet = Test-Internet
 
 if ($hayInternet) {
     Write-Ok "Conexion a internet detectada"
-    Update-Script
+    Test-NewVersion
 } else {
     Write-Warn "Sin conexion a internet — modo offline"
 }
 
+Write-Host ""
+Write-Host "  Este script recopila datos tecnicos del equipo: hardware, discos," -ForegroundColor Gray
+Write-Host "  temperaturas, programas al inicio y procesos activos. Usalo solo" -ForegroundColor Gray
+Write-Host "  con autorizacion del cliente." -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Selecciona una opcion:" -ForegroundColor White
 Write-Host "  [1] Capturar PRE-mantenimiento" -ForegroundColor Cyan
